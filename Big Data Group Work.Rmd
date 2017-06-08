@@ -1,0 +1,86 @@
+---
+title: "Big Data_Group 1"
+author: 
+output: pdf_document
+Data source:
+  [Moro et al., 2011] S. Moro, R. Laureano and P. Cortez. Using Data Mining for Bank Direct Marketing: An Application of the CRISP-DM Methodology. 
+  In P. Novais et al. (Eds.), Proceedings of the European Simulation and Modelling Conference - ESM'2011, pp. 117-121, Guimarães, Portugal, October, 2011. EUROSIS.
+  Available at: [pdf] http://hdl.handle.net/1822/14838  
+                [bib] http://www3.dsi.uminho.pt/pcortez/bib/2011-esm-1.txt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package echo=FALSE}
+library(Amelia)
+library(mice)
+library(VIM)
+library(pscl)
+library(ggplot2)
+library(pROC)
+```
+##**Data Cleaning**
+```{r data cleaning}
+setwd("~/Desktop/Big Data/bank")
+bankdata<- read.csv("/Users/mac/Desktop/Big Data/bank/bank-full.csv", sep=";", na.strings=c("unknown"))
+str(bankdata)
+
+sapply(bankdata,function(x) sum(is.na(x))) #number of missing values
+sapply(bankdata, function(x) length(unique(x)))
+
+missmap(bankdata, main = "Missing values vs observed")
+md.pattern(bankdata)
+aggr_plot <- aggr(bankdata, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(bankdata), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+bankdata_cleanvector <-bankdata[,-c(9,12,16)] #remove the 9th and 16th coloum since the over 40% of them are unknown values
+
+tempData <- mice(bankdata_cleanvector,m=5,maxit=50,meth='pmm',seed=500) #imputing the missing data
+completedData<-complete(tempData,1) #choose the first imputed dataset
+summary(tempData)
+
+#density plot?
+```
+
+##**Interpreting the results of our logistic regression model**
+```{r logit model}
+y<-completedData$y
+
+train_sub=sample(nrow(completedData), 3/4*nrow(completedData))
+train_data= completedData[train_sub,]
+test_data=completedData[-train_sub,]
+dim(train_data)
+dim(test_data)
+
+model <- glm(y ~.,family=binomial(link='logit'),data=train_data)
+summary(model)
+
+modelFit1 <- with(tempData,glm(y ~.,family=binomial(link='logit'),data=train_data))
+summary(pool(modelFit1)) #pool the results of the fitting performed over the imputed datasets
+
+anova(model, test = "Chisq") #table of deviance: how our model is doing against the null model (a model with only the intercept). The wider this gap, the better. 
+
+pR2(model) #assess the model fit
+
+```
+###significance level:
+First of all, we can see that _age_, _job7_, _job11_, _default2_, and _day_ are not statistically significant.
+
+###coefficient
+Being married reduces the log odds by 2.079e-01.
+
+```{r prediction}
+fitted.results <- predict(model,newdata=test_data,type='response')
+
+modelroc=roc(test_data$y,fitted.results)
+plot(modelroc,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),max.auc.polygon=TRUE,auc.polygon.col="green",print.thres=TRUE) #determine the threshold (binary classifier)  
+
+fitted.results <- ifelse(fitted.results > 0.5,"yes","no")
+misClasificError <- mean(fitted.results != test_data$y)
+print(paste('Accuracy',1-misClasificError)) #dependent on the manual split of the data 
+data=data.frame(prob=fitted.results, obs=test_data$y)
+data=data[order(data$prob),]
+n=nrow(data)
+```
+###prediction
