@@ -52,7 +52,10 @@ gnumplots<-function(data,varlist){
       ylab("frequency")+
       scale_x_continuous(breaks = seq(1,10,1),labels=quant.values[2:11])+
       scale_y_continuous(labels=percent)+
-      geom_label(aes(label=percent(freq)),size=3,show.legend = FALSE)+
+      geom_label(aes(label=percent(freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
       guides(fill=guide_legend(title="y"))
     grid.newpage()
     pushViewport(viewport(layout = grid.layout(2, 2)))
@@ -103,7 +106,10 @@ gcatplots<-function(data,varlist){
       xlab(varlist[[i]])+
       ylab("frequency")+
       scale_y_continuous(labels = percent)+
-      geom_label(aes(label=percent(Freq)),size=3,show.legend = FALSE)+
+      geom_label(aes(label=percent(Freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
       guides(fill=guide_legend(title="y"))
     grid.newpage()
     pushViewport(viewport(layout = grid.layout(2, 2)))
