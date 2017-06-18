@@ -71,7 +71,17 @@ gnumplots<-function(data,varlist){
   }
 }
 ##Create the variable list and use gnumplots function 
-numvarlist<-list("age","duration","campaign","pdaysinv","previous","emp.var.rate","cons.price.idx","cons.conf.idx","euribor3m","nr.employed")
+numvarlist<-list(
+  "age",
+  "duration",
+  "campaign",
+  "pdaysinv",
+  "previous",
+  "emp.var.rate",
+  "cons.price.idx",
+  "cons.conf.idx",
+  "euribor3m",
+  "nr.employed")
 gnumplots(data,numvarlist)
 
 #Generate plots for categorical variables
@@ -125,5 +135,15 @@ gcatplots<-function(data,varlist){
   }
 }
 ##Create the variable list and use gcatplots function 
-catvarlist<-list("marital","education","default","housing","loan","contact","month","day_of_week","poutcome")
+catvarlist<-list(
+  "marital",
+  "job",
+  "education",
+  "default",
+  "housing",
+  "loan",
+  "contact",
+  "month",
+  "day_of_week",
+  "poutcome")
 gcatplots(data,catvarlist)
