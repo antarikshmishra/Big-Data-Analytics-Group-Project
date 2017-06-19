@@ -1,0 +1,415 @@
+---
+title: "Bank Marketing_Group 1"
+author: "Antariksh Mishra b00495417  Joël Rozencweig b00399577  Xiyan QIN b00690235  Zhixian Cui b00562229"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+library(Amelia)
+library(mice)
+library(VIM)
+library(pscl)
+library(gplots)
+library(pROC)
+library(ROCR)
+library(FactoMineR)
+library(randomForest)
+library(psych)
+library(ggplot2)
+library(scales)
+library(gridExtra)
+require(grid)
+library(gbm)
+library(caret)
+library(tidyverse)
+library(data.table)
+library(doMC)
+library(e1071)
+library(corrplot)
+library(tidyr)
+```
+
+#**Part I. Initial Exploration**
+##**1.1 Missing values overview**
+```{r echo=FALSE}
+setwd("~/Desktop/Big Data/bank-additional")
+bankdata<- read.csv("/Users/mac/Desktop/Big Data/bank-additional/bank-additional-full.csv", sep=";", na.strings=c("unknown","nonexistent"))
+
+sapply(bankdata,function(x) sum(is.na(x))) #number of missing values
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+missing_per_poutcome<-pMiss(bankdata$poutcome)
+missing_per_default<-pMiss(bankdata$default)
+missmap(bankdata, main = "Missing values vs observed")
+aggr_plot <- aggr(bankdata, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(bankdata), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+Variables with lots of missing data points would be expected to end up with large error terms. Hence, we investigate the amount of missing values both numerically and graphically. Frome the above table and diagram, we see that over 86.34% of _poutcome_ and 20.8% of _default_,together with some other five variables, are missing. 
+
+##**1.2 Data cleaning**
+In the original dataset, _pdays_ takes "999" if the client was not previously contacted, which can not be interpreted in a numerical sense. Therefore, We first make some adjustments to _pdays_ so that all the values have practical meaning. Then we impute missing values on all variables except _poutcome_ and _duration_. 
+```{r echo=FALSE} 
+bankdata$pdays<-1/(bankdata$pdays+1)
+bankdata$pdays[bankdata$pdays == 1/1000] <- 0
+
+bankdata_model1 <-bankdata[,-c(11,15)] 
+
+tempData1 <- mice(bankdata_model1,m=1,maxit=50,meth='pmm',seed=500)
+```
+Usually a safe threshold of missing values is 5% of the total for large datasets. Since the missing value percentage of _poutcome_ far exceed this number, we decide to do the listwise deletion and drop this feature from analysis for the time being. Also, according to the data specification, _duration_ should be discarded if our intention is to have predictive model. Therefore, we remove column 11 and 15 from our dataset, representing _duration_ and _poutcome_ respectively. We then apply MICE to the rest of data with missing values assuming that these values are missing at random (MAR). 
+
+
+#**Part II.Data analysis with logit model - benchmark model**
+##**2.1 Linear algorithms: Logistic regression model(GLM)**
+The model we obtained below will be the benchmark model since we have done nothing to the dataset except imputing the missing values and transforming _pdays_. We apply the imputed dataset to the regression model by splitting the data into training set and test set in order to better evaluate the model. Since the response variable is binary, we therefore adopt the logit model. Then we intend to briefly evaluate the fitting of the model. we apply _anova_ to see how our model is doing against the null model (a model with only the intercept) and also obtain the McFadden R2 index to assess the model fit.
+```{r echo=FALSE}
+completedData1<-complete(tempData1,1)
+train_sub1=sample(nrow(completedData1), 3/4*nrow(completedData1))
+train_data1= completedData1[train_sub1,]
+test_data1=completedData1[-train_sub1,]
+dim(train_data1)
+dim(test_data1)
+
+benchmark_model <- glm(y ~.,family=binomial(link='logit'),data=train_data1)
+summary(benchmark_model)
+
+anova(benchmark_model, test = "Chisq") #table of deviance: how our model is doing against the null model (a model with only the intercept). The wider this gap, the better. 
+
+pR2(benchmark_model) #assess the model fit
+```
+We find that _age_, _education_, _default_, _housing_, _euribor3m_ and _loan_ are not significant at all levels. Some interesting facts are that _bluecollar_ is more significant than any other job categories, and _day of week5 (ie. Friday)_ seems to help predict the result more than other week days. 
+
+The deviances drop when adding each variable one at a time, but _job_, _contact_, _month_, _pdays_, _emp.var.rate_ and _cons.price.idx_ reduce the residual deviances more significantly than the others.
+
+##**2.2 Prediction**
+Then we proceed to evaluate how the model is doing when predicting y on a new set of data through applying the remaining 25% of data. We first set our desicion boundary at 0.5, meaning that if P(y=1|X) > 0.5 then y = "yes" otherwise y= "no". 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fitted.results.benchmark <- predict(benchmark_model,newdata=test_data1,type='response')
+fitted.results.benchmark <- ifelse(fitted.results.benchmark > 0.5,"yes","no") 
+
+misClasificError <- mean(fitted.results.benchmark != test_data1$y)
+print(paste('Accuracy',1-misClasificError))
+
+fitted_value_bm<- table(fitted.results.benchmark)
+real_value_bm<- table(test_data1$y)
+comparison<-data.frame(cbind(real_value_bm,fitted_value_bm))
+comparison
+```
+We calcalate the accuracy rate by comparing the fitted result with its real value. The result is 0.9, which seems quite good. Nevertheless, in our case, over 86% of the response variable is "no". Therefore, the model will achieve a high accuracy rate even if it wrongly predict that all clients will not subscribe. In fact, the comparison table shows that the model did poorly when it came to "yes". 
+
+Therefore, we plot the ROC curve and calculate the AUC which are typical measurements for a binary classifier.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bm_predict <- predict(benchmark_model,newdata=test_data1,type='response')
+pr<-prediction(bm_predict,test_data1$y)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste('auc',auc))
+```
+
+In the following steps, we are going to reduce dimensions of the dataset we used above and compare the prediction results among different models.
+
+
+#**Part III.Further Exploration**
+##**3.1. Variables Selection**
+First, we would like to justify if dropping _poutcome_ is a wise move. We select out and predict with the dataset where _poutcome_ has a value and compare the result with the benchmark model to check if _poutcome_ helps a lot to explain the response variable. 
+```{r echo=False}
+data_na<-bankdata[!(is.na(bankdata$poutcome)),]
+bankdata_model2<-data_na[,-11]
+
+tempData2 <- mice(bankdata_model2,m=5,maxit=50,meth='pmm',seed=500)
+
+completedData2 <- complete(tempData2,1)
+train_sub2 = sample(nrow(completedData2), 3/4*nrow(completedData2))
+train_data2 = completedData2[train_sub2,]
+test_data2=completedData2[-train_sub2,]
+dim(train_data2)
+dim(test_data2)
+
+model2 <- glm(y ~.,family=binomial(link='logit'),data=train_data2)
+summary(model2)
+
+anova(model2, test = "Chisq") #table of deviance: how our model is doing against the null model (a model with only the intercept). The wider this gap, the better. 
+
+pR2(model2) #assess the model fit
+
+fitted.results.m2 <- predict(model2,newdata=test_data2,type='response')
+fitted.results.m2 <- ifelse(fitted.results.m2 > 0.5,"yes","no") 
+
+misClasificError2 <- mean(fitted.results.m2 != test_data2$y)
+print(paste('Accuracy',1-misClasificError2))
+
+fitted_value_m2<- table(fitted.results.m2)
+real_value_m2<- table(test_data2$y)
+comparison<-data.frame(cbind(real_value_m2,fitted_value_m2))
+comparison
+
+predict_m2 <- predict(model2,newdata=test_data2,type='response')
+pr_m2<-prediction(predict_m2,test_data1$y)
+prf <- performance(pr_m2, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+The result shows that _poutcome_ is an important variales and that we should not delete the whole column from our dataset. However, with over 80% of missing values, we can hardly treat it the same way as other variables. And since we do not know the exact reason that leads to the large proportion of missing values, we decide to drop it from the dataset and we also suggest the bank to collect these data as they are important for predicting.
+
+
+```{r echo=FALSE}
+#Descriptive statistics
+#Correlation matrix (for numerical variables only)
+data<- read.csv("/Users/mac/Desktop/Big Data/bank-additional/bank-additional-full.csv", sep=";")
+
+summary(data)
+
+#Generate plots for numerical variables:
+##gnumplots function (automatically generates plots for multiple numerical variables)
+gnumplots<-function(data,varlist){
+  plots.mtx<-matrix(list(),nrow=length(varlist),ncol=3)
+  for(i in 1:length(varlist)){
+    plots.mtx[[i,1]]<-ggplot(data,aes(x=get(varlist[[i]])))+
+      geom_histogram(bins = 30)+
+      xlab(varlist[[i]])
+    plots.mtx[[i,2]]<-ggplot(data,aes(x=get(varlist[[i]]),fill=y,colour=y))+
+      geom_density(alpha=0.25)+
+      xlab(varlist[[i]])+
+      scale_y_continuous(labels = percent)
+    quant.values<-quantile(x = data[,varlist[[i]]], probs = seq(0,1,0.1))
+    plotsrc<-data.frame(
+      quant=c(1:10,1:10),
+      y=rep(c("yes","no"),each=10),
+      count=vector(mode = "integer",length = 20),
+      freq=vector(mode = "double",length = 20))
+    for (j in 1:20) {
+      if (j %in% c(1,11)) {
+        plotsrc$count[j]<-sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j]+1])
+      } else {
+        plotsrc$count[j]<-sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j]+1])-
+          sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j-1]+1])
+      }
+    }
+    for (j in 1:20) {
+      if (sum(plotsrc$count[plotsrc$quant==plotsrc$quant[j]])>0) {
+        plotsrc$freq[j]<-plotsrc$count[j]/sum(plotsrc$count[plotsrc$quant==plotsrc$quant[j]])
+      } else {
+        plotsrc$freq[j]<-plotsrc$freq[j-1]
+      }
+    }
+    plots.mtx[[i,3]]<-ggplot(data=plotsrc,aes(x=quant,y=freq,fill=y))+
+      geom_bar(stat="identity")+
+      xlab(paste(varlist[[i]],"(quantiles)",sep = " "))+
+      ylab("frequency")+
+      scale_x_continuous(breaks = seq(1,10,1),labels=quant.values[2:11])+
+      scale_y_continuous(labels=percent)+
+      geom_label(aes(label=percent(freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
+      guides(fill=guide_legend(title="y"))
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(2, 2)))
+    print(plots.mtx[[i,1]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 1)
+    )
+    print(plots.mtx[[i,2]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 2)
+    )
+    print(plots.mtx[[i,3]],
+          vp=viewport(layout.pos.row = 2, layout.pos.col = 1:2)
+    )
+  }
+}
+##Create the variable list and use gnumplots function 
+numvarlist<-list(
+  "age",
+  "duration",
+  "campaign",
+  "pdaysinv",
+  "previous",
+  "emp.var.rate",
+  "cons.price.idx",
+  "cons.conf.idx",
+  "euribor3m",
+  "nr.employed")
+
+
+#Generate plots for categorical variables
+##gcatplots function (automatically generates plots for multiple categorical variables)
+gcatplots<-function(data,varlist){
+  plots.mtx<-matrix(list(),nrow=length(varlist),ncol=3)
+  for (i in 1:length(varlist)){
+    plots.mtx[[i,1]]<-ggplot(data,aes(x = get(varlist[[i]])))+
+      geom_bar()+
+      xlab(varlist[[i]])
+    cont<-as.data.frame(table(data[,varlist[[i]]],data$y))
+    freqy<-cont[cont$Var2=="yes",3]/sum(cont[cont$Var2=="yes",3])
+    freqn<-cont[cont$Var2=="no",3]/sum(cont[cont$Var2=="no",3])
+    dir<-names(table(data[,varlist[[i]]]))
+    dfy<-data.frame(dir=dir,y=rep("yes",length(dir)),freq=freqy)
+    dfn<-data.frame(dir=dir,y=rep("no",length(dir)),freq=freqn)
+    df<-rbind(dfy,dfn)
+    plots.mtx[[i,2]]<-ggplot(data=df,aes(x=y,y=freq,fill=dir))+
+      geom_bar(stat="identity")+
+      ylab("frequency")+
+      scale_y_continuous(labels = percent)+
+      guides(fill=guide_legend(title=varlist[[i]]))
+    len<-nrow(cont)
+    Freqk<-vector(mode="integer",length=len)
+    for (k in 1:(len/2)){
+      Freqk[k]<-cont[k,3]/(cont[k,3]+cont[k+len/2,3])
+      Freqk[k+len/2]<-cont[k+len/2,3]/(cont[k,3]+cont[k+len/2,3])
+    }
+    cont$Freq<-Freqk
+    plots.mtx[[i,3]]<-ggplot(data=cont,aes(x=Var1,y=Freq,fill=Var2))+
+      geom_bar(stat="identity")+
+      xlab(varlist[[i]])+
+      ylab("frequency")+
+      scale_y_continuous(labels = percent)+
+      geom_label(aes(label=percent(Freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
+      guides(fill=guide_legend(title="y"))
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(2, 2)))
+    print(plots.mtx[[i,1]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 1)
+    )
+    print(plots.mtx[[i,2]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 2)
+    )
+    print(plots.mtx[[i,3]],
+          vp=viewport(layout.pos.row = 2, layout.pos.col = 1:2)
+    )
+  }
+}
+##Create the variable list and use gcatplots function 
+catvarlist<-list(
+  "marital",
+  "job",
+  "education",
+  "default",
+  "housing",
+  "loan",
+  "contact",
+  "month",
+  "day_of_week",
+  "poutcome")
+gcatplots(data,catvarlist)
+```
+Remove variables (before PCA)
+After looking at the plots, we removed all the variables which had little differences between y=="yes" and y=="no" respondents.
+2 exceptions: campaign, education, as they make business sense (e.g. the more educated you are, the more likeky you know about deposits, the more likely you are going to subscribe).
+Duration is also removed as it cannot be used to predict beforehand whether the consumer will subscribe.
+pdays is removed as pdaysinv has been computed instead.
+```{r echo=FALSE}
+rm.var<-c(
+  "age",
+  "duration",
+  "marital",
+  "default",
+  "housing",
+  "loan",
+  "pdays",
+  "day_of_week"
+)
+data<-data[,!names(data) %in% rm.var]
+
+#Create balanced datasets (after PCA, before running logistic regression and boosted trees)
+##Create a dataset with 50% y=="yes" and 50% y=="no"
+data.no<-data[data$y=="no",]
+set.seed(3546)
+data.50sample<-rbind(
+  data.no[sample(nrow(data.no), 4640), ],
+  data[data$y=="yes",])
+rm(data.no)
+##Divide into training and test datasets.
+set.seed(3546)
+index<-createDataPartition(
+  data.50sample$y,
+  p = 0.8,
+  list = FALSE,
+  times = 1)
+data.train<-data.50sample[index,]
+data.test<-data.50sample[-index,]
+rm(index)
+```
+
+PCA
+
+
+##**3.2. Methodology**
+###**3.2.1. Bagging algorithms: Random Forest**
+```{r echo=FALSE}
+train<-train_data1
+test<-test_data1
+model_rf <- randomForest(y ~ ., data = train, importance=TRUE)
+
+varImpPlot(model_rf)
+
+pr_rf<-predict(model_rf,newdata=test)
+table(pr_rf, test$y)
+
+accuray<-(8905+352)/nrow(test)
+print(paste('Accuracy',accuray))
+
+predictions=as.vector(rf_output$votes[,2])
+pred=prediction(predictions,target)
+
+perf_AUC=performance(pred,"auc") #Calculate the AUC value
+AUC=perf_AUC@y.values[[1]]
+
+perf_ROC=performance(pred,"tpr","fpr") #plot the actual ROC curve
+plot(perf_ROC, main="ROC plot")
+text(0.5,0.5,paste("AUC = ",format(AUC, digits=5, scientific=FALSE)))
+
+modelroc_rf=roc(test_data1$y,as.numeric(pr_rf))
+plot(modelroc_rf,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),max.auc.polygon=TRUE,auc.polygon.col="green",print.thres=TRUE)
+```
+The accuracy one tests to see how worse the model performs without each variable, so a high decrease in accuracy would be expected for very predictive variables. The Gini tests to see the result if each variable is taken out and a high score means the variable was important.
+
+###**3.2.2. Boosting algorithms: Stochastic Gradient Boosting (GBM)**
+```{r echo=FALSE}
+#Convert y to numeric binary values
+datab<-data
+levels(datab$y)[levels(datab$y)=="yes"]<-1
+levels(datab$y)[levels(datab$y)=="no"]<-0
+datab$y<-as.numeric(datab$y)-1
+
+#Run boosted trees model
+bst<-gbm(formula = y~.,
+         data = datab,
+         distribution = "bernoulli",
+         n.trees = 200,
+         cv.folds = 4,
+         interaction.depth = 2,
+         n.minobsinnode = 10,
+         shrinkage = 0.05,
+         bag.fraction = 0.5,
+         train.fraction = 0.5,
+         keep.data = FALSE,
+         verbose = TRUE,
+         n.cores = 1)
+pred<-predict(bst,data,type = "response")
+
+#Draw ROC curve
+ROCC<-roc(datab$y,pred)
+plot(ROCC,print.thres="best")
+
+#Generate confusion matrix
+pred.binary<-as.numeric(pred>coords(ROCC,x="best",ret="threshold"))
+table(datab$y,pred.binary)
+#or (better, require caret package)
+confusionMatrix(datab$y,pred.binary,positive = "1")
+```
+
+
+Data source:
+  [Moro et al., 2011] S. Moro, R. Laureano and P. Cortez. Using Data Mining for Bank Direct Marketing: An Application of the CRISP-DM Methodology. 
+  In P. Novais et al. (Eds.), Proceedings of the European Simulation and Modelling Conference - ESM'2011, pp. 117-121, Guimarães, Portugal, October, 2011. EUROSIS."
+  Available at: [pdf] http://hdl.handle.net/1822/14838  
+                [bib] http://www3.dsi.uminho.pt/pcortez/bib/2011-esm-1.txt
