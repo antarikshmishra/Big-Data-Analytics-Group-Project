@@ -1,0 +1,32 @@
+---
+title: "PCAmixdata"
+output: html_document
+---
+```{r}
+install.packages("PCAmixdata")
+library("PCAmixdata")
+```
+
+```{r}
+PCAmix(X.quanti=completedData[,c(1,11:18)],X.quali = completedData[,c(2:10)],ndim = 5,rename.level = TRUE,graph = TRUE)
+
+
+mixdata<-PCAmix(X.quanti=completedData[,c(1,11:18)],X.quali = completedData[,c(2:10)],ndim = 5,rename.level = TRUE,graph = TRUE)
+plot.PCAmix(mixdata)
+```
+
+
+```{r}
+pcadata<-PCAmix(X.quanti=completedData[,c(1,11:18)],ndim = 5,rename.level = TRUE,graph = TRUE)
+plot.PCAmix(pcadata)
+```
+
+```{r}
+mcadata<-PCAmix(X.quali = completedData[,c(2:10)],ndim = 5,rename.level = TRUE,graph = TRUE)
+plot.PCAmix(mcadata)
+```
+
+
+```{r}
+mixdata$eig
+```
