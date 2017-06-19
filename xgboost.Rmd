@@ -1,0 +1,81 @@
+---
+title: "xgboost"
+output: html_document
+---
+
+```{r}
+y=completedData$y
+train_sub=sample(nrow(completedData), 3/4*nrow(completedData))
+train_data= completedData[train_sub,]
+test_data=completedData[-train_sub,]
+dttest<-data.table(test_data)
+dttrain<-data.table((train_data))
+```
+
+
+```{r}
+install.packages("Matrix")
+library("Matrix")
+sparse_train<-sparse.model.matrix(y~.-1,data=dttrain)
+sparse_test<-sparse.model.matrix(y~.-1,data=dttest)
+head(sparse_train)
+head(sparse_test)
+```
+
+```{r}
+dttrain$y<-as.character(dttrain$y)
+dttrain$y[dttrain$y=="yes"]<-"1"
+dttrain$y[dttrain$y=="no"]<-"0"
+dttrain$y<-as.numeric(dttrain$y)
+str(dttrain$y)
+
+dttest$y<-as.character(dttest$y)
+dttest$y[dttest$y=="yes"]<-"1"
+dttest$y[dttest$y=="no"]<-"0"
+dttest$y<-as.numeric(dttest$y)
+str(dttest$y)
+```
+
+```{r}
+library(xgboost)
+bsttrain<-xgboost(data=sparse_train,label = dttrain$y,max_depth=5,
+                  eta=1,nthread=2,nrounds=15,objective="binary:logistic")
+
+bsttest<-xgboost(data=sparse_test,label = dttest$y,max_depth=5,
+                  eta=1,nthread=2,nrounds=15,objective="binary:logistic")
+```
+
+```{r}
+importanceTrain<-xgb.importance(feature_names=colnames(sparse_train),model=bsttrain)
+head(importanceTrain)
+```
+
+
+```{r}
+xgb.plot.importance(importance_matrix=importanceTrain)
+```
+
+```{r}
+pred<-predict(bsttrain,sparse_test)
+print(head(predbst))
+
+prediction<-as.numeric(pred>0.5)
+summary(prediction)
+```
+
+```{r}
+err<-mean(as.numeric(pred>0.5)!=dttest$y)
+print(paste("test-error=",err))
+```
+
+
+```{r}
+xgb.dump(bsttrain,with_stats = TRUE)
+```
+
+```{r}
+install.packages("DiagrammeR")
+library("DiagrammeR")
+
+xgb.plot.tree(model=bsttrain)
+```
