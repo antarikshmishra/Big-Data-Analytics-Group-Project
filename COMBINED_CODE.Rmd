@@ -30,6 +30,8 @@ install.packages("doMC")
 install.packages("e1071")
 install.packages("corrplot")
 install.packages("tidyr")
+install.packages("factoextra")
+library(factoextra)
 library(Amelia)
 library(mice)
 library(VIM)
@@ -54,94 +56,110 @@ library(corrplot)
 library(tidyr)
 ```
 
-#**Part I. Initial Exploration**
-##**1.1 Missing values overview**
+#**Preliminary exploration**
+
+##**Missing values overview**
+
 ```{r echo=FALSE}
 setwd("/Users/Joel/Library/Mobile Documents/com~apple~CloudDocs/Études (ESSEC)/MSc - Big Data Analytics/Case")
 bankdata<-read.csv("bank-additional-full.csv", sep=";", na.strings=c("unknown","nonexistent"))
 
 sapply(bankdata,function(x) sum(is.na(x))) #number of missing values
-pMiss <- function(x){sum(is.na(x))/length(x)*100}
-missing_per_poutcome<-pMiss(bankdata$poutcome)
-missing_per_default<-pMiss(bankdata$default)
-missmap(bankdata, main = "Missing values vs observed")
 aggr_plot <- aggr(bankdata, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(bankdata), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
 ```
 Variables with lots of missing data points would be expected to end up with large error terms. Hence, we investigate the amount of missing values both numerically and graphically. Frome the above table and diagram, we see that over 86.34% of _poutcome_ and 20.8% of _default_,together with some other five variables, are missing. 
 
-##**1.2 Data cleaning**
+##**Data cleaning**
+
 In the original dataset, _pdays_ takes "999" if the client was not previously contacted, which can not be interpreted in a numerical sense. Therefore, We first make some adjustments to _pdays_ so that all the values have practical meaning. Then we impute missing values on all variables except _poutcome_ and _duration_. 
 ```{r echo=FALSE} 
 bankdata$pdays<-1/(bankdata$pdays+1)
 bankdata$pdays[bankdata$pdays == 1/1000] <- 0
-
-bankdata_model1 <-bankdata[,-c(11,15)] 
-
-tempData1 <- mice(bankdata_model1,m=1,maxit=50,meth='pmm',seed=500)
+bankdata<-bankdata[,-c(11,15)] 
+bankdata<-mice(bankdata,m=1,maxit=10,meth='pmm',seed=500)
 ```
 Usually a safe threshold of missing values is 5% of the total for large datasets. Since the missing value percentage of _poutcome_ far exceed this number, we decide to do the listwise deletion and drop this feature from analysis for the time being. Also, according to the data specification, _duration_ should be discarded if our intention is to have predictive model. Therefore, we remove column 11 and 15 from our dataset, representing _duration_ and _poutcome_ respectively. We then apply MICE to the rest of data with missing values assuming that these values are missing at random (MAR). 
 
-#**Part II.Data analysis with logit model - benchmark model**
-##**2.1 Linear algorithms: Logistic regression model(GLM)**
+#**Benchmarking**
+
+##**Logistic regression model on the original dataset**
+
 The model we obtained below will be the benchmark model since we have done nothing to the dataset except imputing the missing values and transforming _pdays_. We apply the imputed dataset to the regression model by splitting the data into training set and test set in order to better evaluate the model. Since the response variable is binary, we therefore adopt the logit model. Then we intend to briefly evaluate the fitting of the model. we apply _anova_ to see how our model is doing against the null model (a model with only the intercept) and also obtain the McFadden R2 index to assess the model fit.
 ```{r echo=FALSE}
-completedData1<-complete(tempData1,1)
-train_sub1=sample(nrow(completedData1), 3/4*nrow(completedData1))
-train_data1= completedData1[train_sub1,]
-test_data1=completedData1[-train_sub1,]
-dim(train_data1)
-dim(test_data1)
+#Impute missing values from MICE
+#bankdata<-mice::complete(bankdata,1)
 
-benchmark_model <- glm(y ~.,family=binomial(link='logit'),data=train_data1)
-summary(benchmark_model)
+#Make training and test datasets
+sub.idx<-sample(nrow(bankdata),3/4*nrow(bankdata))
+train.bench<-bankdata[sub.idx,]
+test.bench<-bankdata[-sub.idx,]
+dim(train.bench)
+dim(test.bench)
+rm(sub.idx)
 
-anova(benchmark_model, test = "Chisq") #table of deviance: how our model is doing against the null model (a model with only the intercept). The wider this gap, the better. 
+#Logistic process function
+logistic.process<-function(train,test) {
+  #Run the logistic regression
+  model<-glm(
+    y~.,
+    family=binomial(link='logit'),
+    data=train)
+  summary(model)
 
-pR2(benchmark_model) #assess the model fit
+  #Make the table of deviance:
+  #How our model is doing against the null model. The wider this gap, the better.
+  anova(model, test = "Chisq") 
+  
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=test,type='response')
+  pred<-ifelse(pred>0.5,"yes","no")
+  print(confusionMatrix(
+    data = pred,
+    reference = test$y,
+    positive = "yes"))
+  
+  #Draw ROC curve and calculate AUC
+  pred<-predict(model,newdata=test,type='response')
+  pred.std<-prediction(pred,test$y)
+  perf.model<-performance(pred.std, measure = "tpr", x.measure = "fpr")
+  plot(perf.model)
+  
+  model.roc<-roc(as.numeric(test$y)-1,as.numeric(pred)-1)
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
+
+logistic.process(train.bench,test.bench)
 ```
 We find that _age_, _education_, _default_, _housing_, _euribor3m_ and _loan_ are not significant at all levels. Some interesting facts are that _bluecollar_ is more significant than any other job categories, and _day of week5 (ie. Friday)_ seems to help predict the result more than other week days. 
 
 The deviances drop when adding each variable one at a time, but _job_, _contact_, _month_, _pdays_, _emp.var.rate_ and _cons.price.idx_ reduce the residual deviances more significantly than the others.
 
-##**2.2 Prediction**
 Then we proceed to evaluate how the model is doing when predicting y on a new set of data through applying the remaining 25% of data. We first set our desicion boundary at 0.5, meaning that if P(y=1|X) > 0.5 then y = "yes" otherwise y= "no". 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
-fitted.results.benchmark <- predict(benchmark_model,newdata=test_data1,type='response')
-fitted.results.benchmark <- ifelse(fitted.results.benchmark > 0.5,"yes","no") 
 
-misClasificError <- mean(fitted.results.benchmark != test_data1$y)
-print(paste('Accuracy',1-misClasificError))
-
-fitted_value_bm<- table(fitted.results.benchmark)
-real_value_bm<- table(test_data1$y)
-comparison<-data.frame(cbind(real_value_bm,fitted_value_bm))
-comparison
-```
 We calculate the accuracy rate by comparing the fitted result with its real value. The result is 0.9, which seems quite good. Nevertheless, in our case, over 86% of the response variable is "no". Therefore, the model will achieve a high accuracy rate even if it wrongly predict that all clients will not subscribe. In fact, the comparison table shows that the model did poorly when it came to "yes". 
 
 Therefore, we plot the ROC curve and calculate the AUC which are typical measurements for a binary classifier.
-```{r echo=FALSE, message=FALSE, warning=FALSE}
-bm_predict <- predict(benchmark_model,newdata=test_data1,type='response')
-pr<-prediction(bm_predict,test_data1$y)
-prf <- performance(pr, measure = "tpr", x.measure = "fpr")
-plot(prf)
 
-auc <- performance(pr, measure = "auc")
-auc <- auc@y.values[[1]]
-print(paste('auc',auc))
-```
+##**Logistic regression model on a balanced dataset**
 
-In the following steps, we are going to reduce dimensions of the dataset we used above and compare the prediction results among different models.
+As we are going to run boosted trees, random forest and logistic regression algorithms on a balanced dataset (i.e. having the same number of people who subscribed and people who did not), we need to compare our results with a benchmark model based on a balanced dataset.
 
-##**2.3 Linear algorithms: Logistic regression model(GLM) - balanced benchmark model**
 ```{r echo=FALSE}
 #Create balanced datasets (after PCA, before running logistic regression and boosted trees)
 ##Create a dataset with 50% y=="yes" and 50% y=="no"
-data.no<-bankdata_model1[bankdata_model1$y=="no",]
+data.no<-bankdata[bankdata$y=="no",]
 set.seed(3546)
 data.50sample<-rbind(
   data.no[sample(nrow(data.no), 4640), ],
-  bankdata_model1[bankdata_model1$y=="yes",])
+  bankdata[bankdata$y=="yes",])
 rm(data.no)
 ##Divide into training and test datasets.
 set.seed(3546)
@@ -150,39 +168,25 @@ index<-createDataPartition(
   p = 0.8,
   list = FALSE,
   times = 1)
-data.train<-data.50sample[index,]
-data.test<-data.50sample[-index,]
+train.bal<-data.50sample[index,]
+test.bal<-data.50sample[-index,]
+dim(train.bal)
+dim(test.bal)
 rm(index)
+rm(data.50sample)
 
-benchmark_model2 <- glm(y ~.,family=binomial(link='logit'),data=data.train)
-summary(benchmark_model2)
-
-fitted.results.benchmark2 <- predict(benchmark_model2,newdata=data.train,type='response')
-fitted.results.benchmark2 <- ifelse(fitted.results.benchmark2 > 0.5,"yes","no") 
-
-misClasificError <- mean(fitted.results.benchmark2 != data.train$y)
-print(paste('Accuracy',1-misClasificError))
-
-fitted_value_bm2<- table(fitted.results.benchmark2)
-real_value_bm2<- table(data.train$y)
-comparison<-data.frame(cbind(real_value_bm2,fitted_value_bm2))
-comparison
-
-bm_predict2 <- predict(benchmark_model2,newdata=data.test,type='response')
-pr2<-prediction(bm_predict2,data.test$y)
-prf2 <- performance(pr2, measure = "tpr", x.measure = "fpr")
-plot(prf2)
-
-auc2 <- performance(pr2, measure = "auc")
-auc2 <- auc2@y.values[[1]]
-print(paste('auc',auc2))
+logistic.process(train.bal,test.bal)
 ```
 
-#**Part III.Further Exploration**
-##**3.1. Variables Selection**
+In the following steps, we are going to reduce dimensions of the dataset we used above and compare the prediction results among different models.
+
+#**Initial variable selection**
+
+##**Descriptive statistics of input variables and correlation with the target variable**
+
 ```{r echo=FALSE}
 #Descriptive statistics
-summary(bankdata_model1)
+summary(bankdata)
 
 #Generate plots for numerical variables:
 ##gnumplots function (automatically generates plots for multiple numerical variables)
@@ -252,7 +256,8 @@ numvarlist<-list(
   "cons.conf.idx",
   "euribor3m",
   "nr.employed")
-gnumplots(bankdata_model1,numvarlist)
+gnumplots(bankdata,numvarlist)
+rm(numvarlist)
 
 #Generate plots for categorical variables
 ##gcatplots function (automatically generates plots for multiple categorical variables)
@@ -315,9 +320,12 @@ catvarlist<-list(
   "contact",
   "month",
   "day_of_week")
-gcatplots(bankdata_model1,catvarlist)
+gcatplots(bankdata,catvarlist)
+rm(catvarlist)
 ```
-Remove variables (before PCA)
+
+##**Variables selection**
+
 After looking at the plots, we removed all the variables which had little differences between y=="yes" and y=="no" respondents.
 2 exceptions: campaign, education, as they make business sense (e.g. the more educated you are, the more likeky you know about deposits, the more likely you are going to subscribe).
 Duration is also removed as it cannot be used to predict beforehand whether the consumer will subscribe.
@@ -351,101 +359,187 @@ rm.var<-c(
   "loan",
   "day_of_week"
 )
-bankdata_model1<-bankdata_model1[,!names(bankdata_model1) %in% rm.var]
+train.bal<-train.bal[,!names(train.bal) %in% rm.var]
+test.bal<-test.bal[,!names(test.bal) %in% rm.var]
+bankdata<-bankdata[,!names(bankdata) %in% rm.var]
+rm(rm.var)
 
-bankdata_model2<-bankdata_model1
-bankdata_model2$pdays[bankdata_model2$pdays>0,]<-1
-bankdata_model2$pdays[bankdata_model2$pdays==0,]<-0
+train.bal$pdays[train.bal$pdays>0]<-1
+train.bal$pdays[train.bal$pdays==0]<-0
 
+test.bal$pdays[test.bal$pdays>0]<-1
+test.bal$pdays[test.bal$pdays==0]<-0
 
-#Create balanced datasets (after PCA, before running logistic regression and boosted trees)
-##Create a dataset with 50% y=="yes" and 50% y=="no"
-data.no<-data[data$y=="no",]
-set.seed(3546)
-data.50sample<-rbind(
-  data.no[sample(nrow(data.no), 4640), ],
-  data[data$y=="yes",])
-rm(data.no)
-##Divide into training and test datasets.
-set.seed(3546)
-index<-createDataPartition(
-  data.50sample$y,
-  p = 0.8,
-  list = FALSE,
-  times = 1)
-data.train<-data.50sample[index,]
-data.test<-data.50sample[-index,]
-rm(index)
+bankdata$pdays[bankdata$pdays>0]<-1
+bankdata$pdays[bankdata$pdays==0]<-0
 ```
 
-PCA
+#**Principal Component Analysis**
 
+We use the singular value decomposition method to perform PCA, as recommended by: http://www.sthda.com/english/wiki/principal-component-analysis-in-r-prcomp-vs-princomp-r-software-and-data-mining
 
-##**3.2. Methodology**
-###**3.2.1. Bagging algorithms: Random Forest**
 ```{r echo=FALSE}
-train<-train_data1
-test<-test_data1
-model_rf <- randomForest(y ~ ., data = train, importance=TRUE)
+#Numerical variables list (without y)
+num.var<-c(
+  "age",
+  "pdays",
+  "previous",
+  "emp.var.rate",
+  "cons.price.idx",
+  "cons.conf.idx",
+  "euribor3m",
+  "nr.employed")
 
-varImpPlot(model_rf)
+#Transform categories into binary variables (bankdata.cat), subset numerical variables but y (bankdata.num), and combine bankdata.cat and bankdata.num
+transform.pca<-function(data,num.var,output.var) {
+  data.cat<-data[,!names(data) %in% c(num.var,output.var)]
+  data.cat<-as.data.frame(model.matrix(~ . + 0, data=data.cat, contrasts.arg = lapply(data.cat, contrasts, contrasts=FALSE)))
+  data.num<-data[,num.var]
+  return(cbind(data.cat,data.num))
+}
 
-pr_rf<-predict(model_rf,newdata=test)
-table(pr_rf, test$y)
+#Run PCA
+res.pca<-prcomp(
+  transform.pca(bankdata,num.var,"y"),
+  scale = TRUE)
 
-accuray<-(8905+352)/nrow(test)
-print(paste('Accuracy',accuray))
+#Matrix of variables loadings
+res.pca$rotation
 
-predictions=as.vector(rf_output$votes[,2])
-pred=prediction(predictions,target)
+#Variance of the principal components
+eig.val<-get_eigenvalue(res.pca)
+ggplot(cbind(comp=as.numeric(gsub("Dim.","",row.names(eig.val))),eig.val))+
+  geom_point(aes(comp,cumulative.variance.percent/100,group=1))+
+  geom_line(aes(comp,cumulative.variance.percent/100,group=1))+
+  geom_bar(aes(comp,variance.percent/100),stat="identity")+
+  scale_y_continuous(limits = c(0,1),breaks=seq(0,1,0.2),labels=percent)+
+  scale_x_continuous(breaks=seq(1,nrow(eig.val),1))+
+  xlab("Components")+
+  ylab("Variance")
 
-perf_AUC=performance(pred,"auc") #Calculate the AUC value
-AUC=perf_AUC@y.values[[1]]
+#Replace numerical variables by k principal components in datasets
+replace.pc<-function(data,res.pca,k,num.var,output.var) {
+  data.pca<-transform.pca(data,num.var,output.var)
+  data.pc<-predict(res.pca,newdata=data.pca)
+  data.pc<-data.pc[,1:k]
+  data.cb<-cbind(as.data.frame(data.pc),target=data[,output.var])
+  names(data.cb)[names(data.cb)=="target"]<-output.var
+  return(data.cb)
+}
+bankdata.pc<-replace.pc(bankdata,res.pca,19,num.var,"y")
+train.bal.pc<-replace.pc(train.bal,res.pca,19,num.var,"y")
+test.bal.pc<-replace.pc(test.bal,res.pca,19,num.var,"y")
 
-perf_ROC=performance(pred,"tpr","fpr") #plot the actual ROC curve
-plot(perf_ROC, main="ROC plot")
-text(0.5,0.5,paste("AUC = ",format(AUC, digits=5, scientific=FALSE)))
-
-modelroc_rf=roc(test_data1$y,as.numeric(pr_rf))
-plot(modelroc_rf,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),max.auc.polygon=TRUE,auc.polygon.col="green",print.thres=TRUE)
+#Remove unused var
+rm(res.pca)
+rm(eig.val)
+rm(num.var)
 ```
+
+After removing useless variables and transforming pdays as a binary variable, we replaced the remaining categorical variables by binary variables. Hence, we performed a PCA on 38 variables.
+Half of the principal components (19) explain 80% of the variance. We created new training and test datasets by replacing original variables by these 19 components.
+
+#**Predictive modelling**
+
+In the section below we run and compare 6 models:
+* Model1A: Random forests with original variables
+* Model1B: Random forests with principal components
+* Model2A: Boosted trees with original variables
+* Model2B: Boosted trees with principal components
+* Model3A: Logistic regression with original variables
+* Model3B: Logistic regression with principal components
+
+##**Bagging algorithms: Random Forest**
+
+```{r echo=FALSE}
+
+random.process<-function(train,test) {
+  #Run the model
+  model<-randomForest(
+    y~.,
+    data=train,
+    importance=TRUE)
+  varImpPlot(model)
+  
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=test)
+  print(confusionMatrix(
+    data = pred,
+    reference = test$y,
+    positive = "yes"))
+  
+  #Draw ROC curve and calculate AUC
+  model.roc<-roc(as.numeric(test$y)-1,as.numeric(pred)-1)
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
+
+random.process(train=train.bal,test=test.bal)
+random.process(train=train.bal.pc,test=test.bal.pc)
+```
+
 The accuracy one tests to see how worse the model performs without each variable, so a high decrease in accuracy would be expected for very predictive variables. The Gini tests to see the result if each variable is taken out and a high score means the variable was important.
 
-###**3.2.2. Boosting algorithms: Stochastic Gradient Boosting (GBM)**
+##**Boosting algorithms: Stochastic Gradient Boosting**
+
 ```{r echo=FALSE}
-#Convert y to numeric binary values
-datab<-data
-levels(datab$y)[levels(datab$y)=="yes"]<-1
-levels(datab$y)[levels(datab$y)=="no"]<-0
-datab$y<-as.numeric(datab$y)-1
+boosted.process<-function(train,test) {
+  #Convert y to numeric binary values
+  train$y<-as.numeric(train$y)-1
+  test$y<-as.numeric(test$y)-1
+  
+  #Run boosted trees model
+  model<-gbm(formula = y~.,
+             data = train,
+             distribution = "bernoulli",
+             n.trees = 10,
+             cv.folds = 2,
+             interaction.depth = 2,
+             n.minobsinnode = 10,
+             shrinkage = 0.05,
+             bag.fraction = 0.5,
+             train.fraction = 0.5,
+             keep.data = FALSE,
+             verbose = TRUE,
+             n.cores = 1)
+  
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=test)
+  print(confusionMatrix(
+    data = pred,
+    reference = test$y,
+    positive = 1))
+  
+  #Draw ROC curve and calculate AUC
+  model.roc<-roc(as.numeric(test$y)-1,pred)
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
 
-#Run boosted trees model
-bst<-gbm(formula = y~.,
-         data = datab,
-         distribution = "bernoulli",
-         n.trees = 200,
-         cv.folds = 4,
-         interaction.depth = 2,
-         n.minobsinnode = 10,
-         shrinkage = 0.05,
-         bag.fraction = 0.5,
-         train.fraction = 0.5,
-         keep.data = FALSE,
-         verbose = TRUE,
-         n.cores = 1)
-pred<-predict(bst,data,type = "response")
-
-#Draw ROC curve
-ROCC<-roc(datab$y,pred)
-plot(ROCC,print.thres="best")
-
-#Generate confusion matrix
-pred.binary<-as.numeric(pred>coords(ROCC,x="best",ret="threshold"))
-table(datab$y,pred.binary)
-#or (better, require caret package)
-confusionMatrix(datab$y,pred.binary,positive = "1")
+boosted.process(train=train.bal,test=test.bal)
+boosted.process(train=train.bal.pc,test=test.bal.pc)
 ```
 
+##**Logistic regression**
+
+```{r echo=FALSE}
+logistic.process(train=train.bal,test=test.bal)
+logistic.process(train=train.bal.pc,test=test.bal.pc)
+```
 
 Data source:
   [Moro et al., 2011] S. Moro, R. Laureano and P. Cortez. Using Data Mining for Bank Direct Marketing: An Application of the CRISP-DM Methodology. 
