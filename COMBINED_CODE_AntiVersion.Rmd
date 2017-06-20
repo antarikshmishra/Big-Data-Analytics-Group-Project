@@ -1,0 +1,594 @@
+---
+title: "Bank Marketing_Group 1"
+author: "Antariksh Mishra b00495417  Joël Rozencweig b00399577  Xiyan QIN b00690235  Zhixian Cui b00562229"
+output: pdf_document
+---
+Introduction:
+
+We have the dataset from a Portuguese banking institution's direct marketing campaigns. The prospective clients were solicited via phone calls. There could be multiple calls to the same client in order to access if the product would be sucscribed to or not.
+
+Our analysis would basically help the bank to determine if the future prospective clients would subscribe to a term deposit or not based on the given variables that we have. They could use our predictive model in their direct marketing campaigns to optimise efforts and increase ROI. They could also just add some other relevant columns and use our models for their online marketing campaigns since there will be a lot more demographic data available on the internet.
+
+Methodology:
+
+We first cleaned the dataset and removed some irrelevant columns or columns with too many missing variables. Then we proceeded to some feature engineering(PCA) and eventually did the predictive modelling where we implement 6 models which are compared to a benchmark model which has all the original variables.
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+install.packages("Amelia")
+install.packages("mice")
+install.packages("VIM")
+install.packages("pscl")
+install.packages("gplots")
+install.packages("pROC")
+install.packages("ROCR")
+install.packages("FactoMineR")
+install.packages("randomForest")
+install.packages("psych")
+install.packages("ggplot2")
+install.packages("scales")
+install.packages("gridExtra")
+require(grid)
+install.packages("gbm")
+install.packages("caret")
+install.packages("tidyverse")
+install.packages("data.table")
+install.packages("doMC")
+install.packages("e1071")
+install.packages("corrplot")
+install.packages("tidyr")
+install.packages("factoextra")
+install.packages("Matrix")
+install.packages("xgboost")
+library(xgboost)
+library(Matrix)
+library(factoextra)
+library(Amelia)
+library(mice)
+library(VIM)
+library(pscl)
+library(gplots)
+library(pROC)
+library(ROCR)
+library(FactoMineR)
+library(randomForest)
+library(psych)
+library(ggplot2)
+library(scales)
+library(gridExtra)
+require(grid)
+library(gbm)
+library(caret)
+library(tidyverse)
+library(data.table)
+library(doMC)
+library(e1071)
+library(corrplot)
+library(tidyr)
+```
+
+#**Preliminary exploration**
+
+##**Missing values overview**
+
+```{r echo=FALSE}
+setwd("/Users/Joel/Library/Mobile Documents/com~apple~CloudDocs/Études (ESSEC)/MSc - Big Data Analytics/Case")
+bankdata<-read.csv("raw_data/bank-additional-full.csv", sep=";", na.strings=c("unknown","nonexistent"))
+
+sapply(bankdata,function(x) sum(is.na(x))) #number of missing values
+aggr_plot <- aggr(bankdata, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(bankdata), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+Variables with lots of missing data points would be expected to end up with large error terms. Hence, we investigate the amount of missing values both numerically and graphically. Frome the above table and diagram, we see that over 86.34% of _poutcome_ and 20.8% of _default_,together with some other five variables, are missing. 
+
+##**Data cleaning**
+
+In the original dataset, _pdays_ takes "999" if the client was not previously contacted, which can not be interpreted in a numerical sense. Therefore, We first make some adjustments to _pdays_ so that all the values have practical meaning. Then we impute missing values on all variables except _poutcome_ and _duration_. 
+```{r echo=FALSE} 
+bankdata$pdays<-1/(bankdata$pdays+1)
+bankdata$pdays[bankdata$pdays == 1/1000] <- 0
+bankdata<-bankdata[,-c(11,15)] 
+bankdata<-mice(bankdata,m=1,maxit=10,meth='pmm',seed=500)
+```
+Usually a safe threshold of missing values is 5% of the total for large datasets. Since the missing value percentage of _poutcome_ far exceed this number, we decide to do the listwise deletion and drop this feature from analysis for the time being. Also, according to the data specification, _duration_ should be discarded if our intention is to have predictive model. Therefore, we remove column 11 and 15 from our dataset, representing _duration_ and _poutcome_ respectively. We then apply MICE to the rest of data with missing values assuming that these values are missing at random (MAR). 
+
+#**Benchmarking**
+
+##**Logistic regression model on the original dataset**
+
+The model we obtained below will be the benchmark model since we have done nothing to the dataset except imputing the missing values and transforming _pdays_. We apply the imputed dataset to the regression model by splitting the data into training set and test set in order to better evaluate the model. Since the response variable is binary, we therefore adopt the logit model. Then we intend to briefly evaluate the fitting of the model. we apply _anova_ to see how our model is doing against the null model (a model with only the intercept) and also obtain the McFadden R2 index to assess the model fit.
+```{r echo=FALSE}
+#Impute missing values from MICE
+bankdata<-mice::complete(bankdata,1)
+
+#Make training and test datasets
+sub.idx<-sample(nrow(bankdata),0.75*nrow(bankdata))
+train.bench<-bankdata[sub.idx,]
+test.bench<-bankdata[-sub.idx,]
+dim(train.bench)
+dim(test.bench)
+rm(sub.idx)
+
+#Logistic process function
+logistic.process<-function(train,test) {
+  #Run the logistic regression
+  model<-glm(
+    y~.,
+    family=binomial(link='logit'),
+    data=train)
+  summary(model)
+
+  #Make the table of deviance:
+  #How our model is doing against the null model. The wider this gap, the better.
+  anova(model, test = "Chisq") 
+  
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=test,type='response')
+  pred<-ifelse(pred>0.5,"yes","no")
+  print(confusionMatrix(
+    data = pred,
+    reference = test$y,
+    positive = "yes"))
+  
+  #Draw ROC curve and calculate AUC
+  pred<-predict(model,newdata=test,type='response')
+  pred.std<-prediction(pred,test$y)
+  perf.model<-performance(pred.std, measure = "tpr", x.measure = "fpr")
+  plot(perf.model)
+  
+  model.roc<-roc(as.numeric(test$y)-1,as.numeric(pred)-1)
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
+
+logistic.process(train.bench,test.bench)
+```
+We find that _age_, _education_, _default_, _housing_, _euribor3m_ and _loan_ are not significant at all levels. Some interesting facts are that _bluecollar_ is more significant than any other job categories, and _day of week5 (ie. Friday)_ seems to help predict the result more than other week days. 
+
+The deviances drop when adding each variable one at a time, but _job_, _contact_, _month_, _pdays_, _emp.var.rate_ and _cons.price.idx_ reduce the residual deviances more significantly than the others.
+
+Then we proceed to evaluate how the model is doing when predicting y on a new set of data through applying the remaining 25% of data. We first set our desicion boundary at 0.5, meaning that if P(y=1|X) > 0.5 then y = "yes" otherwise y= "no". 
+
+We calculate the accuracy rate by comparing the fitted result with its real value. The result is 0.9, which seems quite good. Nevertheless, in our case, over 86% of the response variable is "no". Therefore, the model will achieve a high accuracy rate even if it wrongly predict that all clients will not subscribe. In fact, the comparison table shows that the model did poorly when it came to "yes". 
+
+Therefore, we plot the ROC curve and calculate the AUC which are typical measurements for a binary classifier.
+
+##**Logistic regression model on a balanced dataset**
+
+As we are going to run boosted trees, random forest and logistic regression algorithms on a balanced dataset (i.e. having the same number of people who subscribed and people who did not), we need to compare our results with a benchmark model based on a balanced dataset.
+
+```{r echo=FALSE}
+#Create balanced datasets (after PCA, before running logistic regression and boosted trees)
+##Create a dataset with 50% y=="yes" and 50% y=="no"
+data.no<-bankdata[bankdata$y=="no",]
+set.seed(3546)
+data.50sample<-rbind(
+  data.no[sample(nrow(data.no), 4640), ],
+  bankdata[bankdata$y=="yes",])
+rm(data.no)
+##Divide into training and test datasets.
+set.seed(3546)
+index<-createDataPartition(
+  data.50sample$y,
+  p = 0.8,
+  list = FALSE,
+  times = 1)
+train.bal<-data.50sample[index,]
+test.bal<-data.50sample[-index,]
+dim(train.bal)
+dim(test.bal)
+rm(index)
+rm(data.50sample)
+
+logistic.process(train.bal,test.bal)
+```
+
+In the following steps, we are going to reduce dimensions of the dataset we used above and compare the prediction results among different models.
+
+#**Initial variable selection**
+
+##**Descriptive statistics of input variables and correlation with the target variable**
+
+```{r echo=FALSE}
+#Descriptive statistics
+summary(bankdata)
+
+#Generate plots for numerical variables:
+##gnumplots function (automatically generates plots for multiple numerical variables)
+gnumplots<-function(data,varlist){
+  plots.mtx<-matrix(list(),nrow=length(varlist),ncol=3)
+  for(i in 1:length(varlist)){
+    plots.mtx[[i,1]]<-ggplot(data,aes(x=get(varlist[[i]])))+
+      geom_histogram(bins = 30)+
+      xlab(varlist[[i]])
+    plots.mtx[[i,2]]<-ggplot(data,aes(x=get(varlist[[i]]),fill=y,colour=y))+
+      geom_density(alpha=0.25)+
+      xlab(varlist[[i]])+
+      scale_y_continuous(labels = percent)
+    quant.values<-quantile(x = data[,varlist[[i]]], probs = seq(0,1,0.1))
+    plotsrc<-data.frame(
+      quant=c(1:10,1:10),
+      y=rep(c("yes","no"),each=10),
+      count=vector(mode = "integer",length = 20),
+      freq=vector(mode = "double",length = 20))
+    for (j in 1:20) {
+      if (j %in% c(1,11)) {
+        plotsrc$count[j]<-sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j]+1])
+      } else {
+        plotsrc$count[j]<-sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j]+1])-
+          sum(data$y==plotsrc$y[j] & data[,varlist[[i]]]<=quant.values[plotsrc$quant[j-1]+1])
+      }
+    }
+    for (j in 1:20) {
+      if (sum(plotsrc$count[plotsrc$quant==plotsrc$quant[j]])>0) {
+        plotsrc$freq[j]<-plotsrc$count[j]/sum(plotsrc$count[plotsrc$quant==plotsrc$quant[j]])
+      } else {
+        plotsrc$freq[j]<-plotsrc$freq[j-1]
+      }
+    }
+    plots.mtx[[i,3]]<-ggplot(data=plotsrc,aes(x=quant,y=freq,fill=y))+
+      geom_bar(stat="identity")+
+      xlab(paste(varlist[[i]],"(quantiles)",sep = " "))+
+      ylab("frequency")+
+      scale_x_continuous(breaks = seq(1,10,1),labels=quant.values[2:11])+
+      scale_y_continuous(labels=percent)+
+      geom_label(aes(label=percent(freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
+      guides(fill=guide_legend(title="y"))
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(2, 2)))
+    print(plots.mtx[[i,1]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 1)
+    )
+    print(plots.mtx[[i,2]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 2)
+    )
+    print(plots.mtx[[i,3]],
+          vp=viewport(layout.pos.row = 2, layout.pos.col = 1:2)
+    )
+  }
+}
+##Create the variable list and use gnumplots function 
+numvarlist<-list(
+  "age",
+  "campaign",
+  "pdays",
+  "previous",
+  "emp.var.rate",
+  "cons.price.idx",
+  "cons.conf.idx",
+  "euribor3m",
+  "nr.employed")
+gnumplots(bankdata,numvarlist)
+rm(numvarlist)
+
+#Generate plots for categorical variables
+##gcatplots function (automatically generates plots for multiple categorical variables)
+gcatplots<-function(data,varlist){
+  plots.mtx<-matrix(list(),nrow=length(varlist),ncol=3)
+  for (i in 1:length(varlist)){
+    plots.mtx[[i,1]]<-ggplot(data,aes(x = get(varlist[[i]])))+
+      geom_bar()+
+      xlab(varlist[[i]])
+    cont<-as.data.frame(table(data[,varlist[[i]]],data$y))
+    freqy<-cont[cont$Var2=="yes",3]/sum(cont[cont$Var2=="yes",3])
+    freqn<-cont[cont$Var2=="no",3]/sum(cont[cont$Var2=="no",3])
+    dir<-names(table(data[,varlist[[i]]]))
+    dfy<-data.frame(dir=dir,y=rep("yes",length(dir)),freq=freqy)
+    dfn<-data.frame(dir=dir,y=rep("no",length(dir)),freq=freqn)
+    df<-rbind(dfy,dfn)
+    plots.mtx[[i,2]]<-ggplot(data=df,aes(x=y,y=freq,fill=dir))+
+      geom_bar(stat="identity")+
+      ylab("frequency")+
+      scale_y_continuous(labels = percent)+
+      guides(fill=guide_legend(title=varlist[[i]]))
+    len<-nrow(cont)
+    Freqk<-vector(mode="integer",length=len)
+    for (k in 1:(len/2)){
+      Freqk[k]<-cont[k,3]/(cont[k,3]+cont[k+len/2,3])
+      Freqk[k+len/2]<-cont[k+len/2,3]/(cont[k,3]+cont[k+len/2,3])
+    }
+    cont$Freq<-Freqk
+    plots.mtx[[i,3]]<-ggplot(data=cont,aes(x=Var1,y=Freq,fill=Var2))+
+      geom_bar(stat="identity")+
+      xlab(varlist[[i]])+
+      ylab("frequency")+
+      scale_y_continuous(labels = percent)+
+      geom_label(aes(label=percent(Freq)),
+                 size=3,
+                 position = position_stack(vjust = 0.5),
+                 show.legend = FALSE)+
+      guides(fill=guide_legend(title="y"))
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(2, 2)))
+    print(plots.mtx[[i,1]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 1)
+    )
+    print(plots.mtx[[i,2]],
+          vp=viewport(layout.pos.row = 1, layout.pos.col = 2)
+    )
+    print(plots.mtx[[i,3]],
+          vp=viewport(layout.pos.row = 2, layout.pos.col = 1:2)
+    )
+  }
+}
+##Create the variable list and use gcatplots function 
+catvarlist<-list(
+  "marital",
+  "job",
+  "education",
+  "default",
+  "housing",
+  "loan",
+  "contact",
+  "month",
+  "day_of_week")
+gcatplots(bankdata,catvarlist)
+rm(catvarlist)
+```
+
+##**Variables selection**
+
+After looking at the plots, we removed all the variables which had little differences between y=="yes" and y=="no" respondents.
+2 exceptions: campaign, education, as they make business sense (e.g. the more educated you are, the more likeky you know about deposits, the more likely you are going to subscribe).
+Duration is also removed as it cannot be used to predict beforehand whether the consumer will subscribe.
+pdays is removed as pdaysinv has been computed instead.
+
+* _age_ doesn't seem to explain much the outcome, but we found that extremely older and extremely younger people tend to subscribe more to the deposit.
+* We should delete _campaign_ as there seems to be no direct correlation with y.
+* We observe that people who have never been contacted before are much less likely to subscribe than people who have, so we will transform _pdays_ as a binary variable.
+* _previous_ stays unchanged.
+* _emp.var.rate_ stays unchanged.
+* _cons.price.idx_ stays unchanged.
+* _cons.conf.idx_ stays unchanged.
+* _euribor3m_ stays changed.
+* _nr.employed_ stays changed.
+* We should delete _marital_ as there seems to be no direct correlation with y.
+* _job_ stays changed.
+* _education_ stays changed.
+* We should delete _default_ as there seems to be no direct correlation with y.
+* We should delete _housing_ as there seems to be no direct correlation with y.
+* We should delete _loan_ as there seems to be no direct correlation with y.
+* _contact_ stays changed.
+* _month_ stays changed.
+* We should delete _day of week_ as there seems to be no direct correlation with y.
+
+```{r echo=FALSE}
+rm.var<-c(
+  "campaign",
+  "marital",
+  "default",
+  "housing",
+  "loan",
+  "day_of_week"
+)
+train.bal<-train.bal[,!names(train.bal) %in% rm.var]
+test.bal<-test.bal[,!names(test.bal) %in% rm.var]
+bankdata<-bankdata[,!names(bankdata) %in% rm.var]
+rm(rm.var)
+
+train.bal$pdays[train.bal$pdays>0]<-1
+train.bal$pdays[train.bal$pdays==0]<-0
+
+test.bal$pdays[test.bal$pdays>0]<-1
+test.bal$pdays[test.bal$pdays==0]<-0
+
+bankdata$pdays[bankdata$pdays>0]<-1
+bankdata$pdays[bankdata$pdays==0]<-0
+```
+
+#**Principal Component Analysis**
+
+We use the singular value decomposition method to perform PCA, as recommended by: http://www.sthda.com/english/wiki/principal-component-analysis-in-r-prcomp-vs-princomp-r-software-and-data-mining
+
+```{r echo=FALSE}
+#Numerical variables list (without y)
+num.var<-c(
+  "age",
+  "pdays",
+  "previous",
+  "emp.var.rate",
+  "cons.price.idx",
+  "cons.conf.idx",
+  "euribor3m",
+  "nr.employed")
+
+#Transform categories into binary variables (bankdata.cat), subset numerical variables but y (bankdata.num), and combine bankdata.cat and bankdata.num
+transform.pca<-function(data,num.var,output.var) {
+  data.cat<-data[,!names(data) %in% c(num.var,output.var)]
+  data.cat<-as.data.frame(model.matrix(~ . + 0, data=data.cat, contrasts.arg = lapply(data.cat, contrasts, contrasts=FALSE)))
+  data.num<-data[,num.var]
+  return(cbind(data.cat,data.num))
+}
+
+#Run PCA
+res.pca<-prcomp(
+  transform.pca(bankdata,num.var,"y"),
+  scale = TRUE)
+
+#Matrix of variables loadings
+res.pca$rotation
+
+#Variance of the principal components
+eig.val<-get_eigenvalue(res.pca)
+ggplot(cbind(comp=as.numeric(gsub("Dim.","",row.names(eig.val))),eig.val))+
+  geom_point(aes(comp,cumulative.variance.percent/100,group=1))+
+  geom_line(aes(comp,cumulative.variance.percent/100,group=1))+
+  geom_bar(aes(comp,variance.percent/100),stat="identity")+
+  scale_y_continuous(limits = c(0,1),breaks=seq(0,1,0.2),labels=percent)+
+  scale_x_continuous(breaks=seq(1,nrow(eig.val),1))+
+  xlab("Components")+
+  ylab("Variance")
+
+#Replace numerical variables by k principal components in datasets
+replace.pc<-function(data,res.pca,k,num.var,output.var) {
+  data.pca<-transform.pca(data,num.var,output.var)
+  data.pc<-predict(res.pca,newdata=data.pca)
+  data.pc<-data.pc[,1:k]
+  data.cb<-cbind(as.data.frame(data.pc),target=data[,output.var])
+  names(data.cb)[names(data.cb)=="target"]<-output.var
+  return(data.cb)
+}
+bankdata.pc<-replace.pc(bankdata,res.pca,19,num.var,"y")
+train.bal.pc<-replace.pc(train.bal,res.pca,19,num.var,"y")
+test.bal.pc<-replace.pc(test.bal,res.pca,19,num.var,"y")
+
+#Remove unused var
+rm(res.pca)
+rm(eig.val)
+rm(num.var)
+```
+
+After removing useless variables and transforming pdays as a binary variable, we replaced the remaining categorical variables by binary variables. Hence, we performed a PCA on 38 variables.
+Half of the principal components (19) explain 80% of the variance. We created new training and test datasets by replacing original variables by these 19 components.
+
+#**Predictive modelling**
+
+In the section below we run and compare 6 models:
+* Model1A: Random forests with original variables
+* Model1B: Random forests with principal components
+* Model2A: Boosted trees with original variables
+* Model2B: Boosted trees with principal components
+* Model3A: Logistic regression with original variables
+* Model3B: Logistic regression with principal components
+
+Note: We'll be using a threshold of 0.5 for a "yes" in all our models.
+
+##**Bagging algorithms: Random Forest**
+
+```{r echo=FALSE}
+random.process<-function(train,test) {
+  
+  #Run the model
+  model<-randomForest(
+    y~.,
+    data=train,
+    importance=TRUE)
+  varImpPlot(model)
+  
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=test,type="prob")
+  pred.bin<-ifelse(pred>0.5,1,0)
+  pred.bin<-as.data.frame(pred.bin)[,2]
+  print(confusionMatrix(
+    data = pred.bin,
+    reference = as.numeric(test$y)-1,
+    positive = "1"))
+  
+  #Draw ROC curve and calculate AUC
+  model.roc<-roc(response=as.numeric(test$y)-1,predictor=pred[,2])
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
+
+random.process(train=train.bal,test=test.bal)
+random.process(train=train.bal.pc,test=test.bal.pc)
+```
+
+The accuracy one tests to see how worse the model performs without each variable, so a high decrease in accuracy would be expected for very predictive variables. The Gini tests to see the result if each variable is taken out and a high score means the variable was important.
+
+Here we see that the AUC for the random forest model done using the original variables gives us an AUC of 0.784 which is pretty close to that of the benchmark model and the sensitivity is almost the same too. However, when we do the random forest model with the principal component variables we see that the AUC drops to 0.730, but the sensitivity is better than the benchmark model by quite a bit: 67.13%. So, I think it is safe to say that the random forest model with the principal component variables is the better performing one in this case, given our metric of judging models is bettering our true positive rate.
+
+##**Boosting algorithms: Stochastic Gradient Boosting**
+
+```{r echo=FALSE}
+boosted.process<-function(train,test) {
+  #Transform into sparse
+  sparse.train<-sparse.model.matrix(y~.-1,data=train)
+  sparse.test<-sparse.model.matrix(y~.-1,data=test)
+  
+  #Transform into binary
+  train$y<-as.character(train$y)
+  train$y[train$y=="yes"]<-"1"
+  train$y[train$y=="no"]<-"0"
+  train$y<-as.numeric(train$y)
+  
+  test$y<-as.character(test$y)
+  test$y[test$y=="yes"]<-"1"
+  test$y[test$y=="no"]<-"0"
+  test$y<-as.numeric(test$y)
+  
+  #Run boosted trees model
+  model<-xgboost(
+    data=sparse.train,
+    label = train$y,
+    max_depth=5,
+    eta=1,
+    nthread=2,
+    nrounds=15,
+    objective="binary:logistic")
+  
+  #Importance of factors
+  imp<-xgb.importance(
+    feature_names=colnames(sparse.train),
+    model=model)
+  imp
+  print(imp)
+  #Predict on the test dataset, make confusion matrix, calculate performance indicators
+  pred<-predict(model,newdata=sparse.test)
+  pred.bin<-ifelse(pred>0.5,1,0)
+  print(confusionMatrix(
+    data = pred.bin,
+    reference = test$y,
+    positive = "1"))
+  
+  #Draw ROC curve and calculate AUC
+  model.roc<-roc(test$y,pred)
+  plot(
+    model.roc,
+    print.auc=TRUE,
+    auc.polygon=TRUE,
+    grid=c(0.1,0.2),
+    grid.col=c("green","red"),
+    max.auc.polygon=TRUE,
+    auc.polygon.col="green",
+    print.thres=TRUE)
+}
+
+boosted.process(train=train.bal,test=test.bal)
+boosted.process(train=train.bal.pc,test=test.bal.pc)
+```
+
+If we look at the "factor importance" table here, we see that the variable _nr.employed_ is contributing the most, followed by _euribor3m_ , _cons.conf.idx_ and _age_  
+
+Here we see that the AUC(0.778) is pretty close to that of the benchmark model when we run the stochastic gradient boosting model with the original variables, and the sensitivity is marginally better than that of the bechmark model. When we use the same model with the principal component variables, we get an inferior AUC and an inferior sensitivity so the one with the original variables is better in this case.
+
+
+##**Logistic regression**
+
+```{r echo=FALSE}
+logistic.process(train=train.bal,test=test.bal)
+logistic.process(train=train.bal.pc,test=test.bal.pc)
+```
+
+Here, we see that when run with the original variables, the logistic regression returns an AUC almost equal to that of the benchmark model and also an almost equal senstivity. However, when run with the principal component variables, we get a lower AUC but better sensitivity.
+
+We see that all these models have a lower AUC than the benchmark model and that is normal because we reduced a lot of variables and in our principal components training set we discarded 20% of the variance of the dataset when we selected only 19 of the 38 PCs. 
+
+The final conclusion of our analysis would depend on the marketing goal of the bank. In case its new customer acquisition, then we would use the AUC as the most important metric of the model and hence that would imply that the logistic regression with the original variables would be the best model. However, if the objective of the bank is customer retention then we would use senstivity as the most meaningful metric and that would imply that the random forest model with the principal component variables would be the best one out of the six models we implemented.
+
+Recommendation: We have seen that the variable _poutcome_ has a very positive correlation with the output variable so we would recommend the bank to collect that particular data more closely.
+
+Data source:
+  [Moro et al., 2011] S. Moro, R. Laureano and P. Cortez. Using Data Mining for Bank Direct Marketing: An Application of the CRISP-DM Methodology. 
+  In P. Novais et al. (Eds.), Proceedings of the European Simulation and Modelling Conference - ESM'2011, pp. 117-121, Guimarães, Portugal, October, 2011. EUROSIS."
+  Available at: [pdf] http://hdl.handle.net/1822/14838  
+                [bib] http://www3.dsi.uminho.pt/pcortez/bib/2011-esm-1.txt
