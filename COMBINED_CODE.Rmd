@@ -31,6 +31,10 @@ install.packages("e1071")
 install.packages("corrplot")
 install.packages("tidyr")
 install.packages("factoextra")
+install.packages("Matrix")
+install.packages("xgboost")
+library(xgboost)
+library(Matrix)
 library(factoextra)
 library(Amelia)
 library(mice)
@@ -452,8 +456,8 @@ In the section below we run and compare 6 models:
 ##**Bagging algorithms: Random Forest**
 
 ```{r echo=FALSE}
-
 random.process<-function(train,test) {
+  
   #Run the model
   model<-randomForest(
     y~.,
@@ -462,14 +466,16 @@ random.process<-function(train,test) {
   varImpPlot(model)
   
   #Predict on the test dataset, make confusion matrix, calculate performance indicators
-  pred<-predict(model,newdata=test)
+  pred<-predict(model,newdata=test,type="prob")
+  pred.bin<-ifelse(pred>0.5,1,0)
+  pred.bin<-as.data.frame(pred.bin)[,2]
   print(confusionMatrix(
-    data = pred,
-    reference = test$y,
-    positive = "yes"))
+    data = pred.bin,
+    reference = as.numeric(test$y)-1,
+    positive = "1"))
   
   #Draw ROC curve and calculate AUC
-  model.roc<-roc(as.numeric(test$y)-1,as.numeric(pred)-1)
+  model.roc<-roc(response=as.numeric(test$y)-1,predictor=pred[,2])
   plot(
     model.roc,
     print.auc=TRUE,
@@ -491,34 +497,47 @@ The accuracy one tests to see how worse the model performs without each variable
 
 ```{r echo=FALSE}
 boosted.process<-function(train,test) {
-  #Convert y to numeric binary values
-  train$y<-as.numeric(train$y)-1
-  test$y<-as.numeric(test$y)-1
+  #Transform into sparse
+  sparse.train<-sparse.model.matrix(y~.-1,data=train)
+  sparse.test<-sparse.model.matrix(y~.-1,data=test)
+  
+  #Transform into binary
+  train$y<-as.character(train$y)
+  train$y[train$y=="yes"]<-"1"
+  train$y[train$y=="no"]<-"0"
+  train$y<-as.numeric(train$y)
+  
+  test$y<-as.character(test$y)
+  test$y[test$y=="yes"]<-"1"
+  test$y[test$y=="no"]<-"0"
+  test$y<-as.numeric(test$y)
   
   #Run boosted trees model
-  model<-gbm(formula = y~.,
-             data = train,
-             distribution = "bernoulli",
-             n.trees = 10,
-             cv.folds = 2,
-             interaction.depth = 2,
-             n.minobsinnode = 10,
-             shrinkage = 0.05,
-             bag.fraction = 0.5,
-             train.fraction = 0.5,
-             keep.data = FALSE,
-             verbose = TRUE,
-             n.cores = 1)
+  model<-xgboost(
+    data=sparse.train,
+    label = train$y,
+    max_depth=5,
+    eta=1,
+    nthread=2,
+    nrounds=15,
+    objective="binary:logistic")
+  
+  #Importance of factors
+  imp<-xgb.importance(
+    feature_names=colnames(sparse.train),
+    model=model)
+  imp
   
   #Predict on the test dataset, make confusion matrix, calculate performance indicators
-  pred<-predict(model,newdata=test)
+  pred<-predict(model,newdata=sparse.test)
+  pred.bin<-ifelse(pred>0.5,1,0)
   print(confusionMatrix(
-    data = pred,
+    data = pred.bin,
     reference = test$y,
-    positive = 1))
+    positive = "1"))
   
   #Draw ROC curve and calculate AUC
-  model.roc<-roc(as.numeric(test$y)-1,pred)
+  model.roc<-roc(test$y,pred)
   plot(
     model.roc,
     print.auc=TRUE,
